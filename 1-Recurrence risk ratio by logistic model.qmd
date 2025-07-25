@@ -1,0 +1,432 @@
+---
+title: "Recurrence risk ratio to control group"
+format: html
+author: "Yiling Zhou & Yiran Li" 
+date: 05-02-2024 
+update date: 24-04-2024
+R version: "4.2.3" 
+editor: visual 
+editor_options:
+  chunk_output_type: console
+---
+
+## Objectives
+
+1.  prepare the data for linear model: age\**Exposure + age\^2 \* Exposure + sex\**Exposure (options: + kinshipSize) kinship size is a categorical variable
+
+2.  linear model function, calculate the RRR and SE, 95% CI, RRR is relative risk ratio to control group.
+
+3.  prepare data for h2 calculation
+
+4.  present results in tables and figures
+
+## Load packages
+
+```{r}
+library(tidyverse) 
+library(data.table) 
+library(marginaleffects)
+library(purrr)
+library(speedglm)
+library(foreach)
+library(doParallel)
+```
+
+## Functions
+
+### Function for estimating number of relatives affected vs 0
+
+1.  marginal lambda
+2.  marginal prevalence risk ratio (1 vs 0)
+
+```{r}
+# 1. se of x/y
+getRRR_SE <- function(x, x_SE, y, y_SE){
+  varRR <- (1/y^2) * (x_SE^2) + (x^2/y^4) * (y_SE^2)
+  seRR <- sqrt(varRR)
+  return(seRR)
+}
+
+
+# 2. calculate RRR
+getRRR <- function( Outcome, Exposure, Relative, dt)
+  {
+  RRR_var <- paste0(Exposure, "_", Relative)
+  Outcome_var <- paste0(Outcome, "_individual")
+  count_var <- paste0("counts_", Relative)
+  birth_year_var <-  paste0("birth_year_", Relative)
+  
+  # NA is only for sex-pecific kinship (brother), not for kinship (sibling) in our analysis data
+  dt <- dt[!is.na(get(RRR_var)), ]
+  # calcualte individual age
+  dt[, age := givenYear - birth_year]
+  # calculate relative age
+  dt[, age_relative := givenYear - get(birth_year_var)]
+  dt <- dt[age<=80 &age_relative<=80,]
+  
+  # categorize
+  if(Relative == "Parent"){
+    dt[, NumberAffected := get(RRR_var)]
+    dt[NumberAffected>2, NumberAffected := 2]
+    dt[, NumberAffected := as.character(NumberAffected)]
+    dt[, NumberAffected:=factor(NumberAffected,
+                                levels = c("0", "1", "2"))]
+  }else{
+    dt[, NumberAffected := get(RRR_var)]
+    dt[NumberAffected>1, NumberAffected := 1]
+    dt[, NumberAffected := as.character(NumberAffected)]
+    dt[, NumberAffected:=factor(NumberAffected,
+                                levels = c("0", "1"))]
+  }
+  
+  # avoid extreme number in kinship size
+  dt[get(count_var)>2, (count_var) := 3]
+  if_n_kinship <- dt[,.N, by = count_var][get(count_var) == max(get(count_var)), N]
+  if(if_n_kinship <100){
+    dt[get(count_var) == max(get(count_var)), (count_var):= get(count_var) -1]
+  }
+  # categorize the kinship size
+  if(max(dt[,get(count_var)]) >2){
+    dt[, kinshipSize := cut(get(count_var),
+                          breaks = c(1, 2, 3, Inf),
+                          labels = c("1", "2", "Over2"),
+                          right = FALSE)]
+  }else{
+      dt[, kinshipSize := as.character(get(count_var))]
+  }
+  
+  # counts
+  # interaction term in the model
+  if(uniqueN(dt$kinshipSize) > 1){
+    fitFormula <- as.formula(paste0(Outcome_var, " ~ NumberAffected*(age+ I(age^2) + sex)+age_relative+I(age_relative^2)+kinshipSize"))
+  }else{
+    fitFormula <- as.formula(paste0(Outcome_var, " ~ NumberAffected*(age+ I(age^2) + sex)+age_relative+I(age_relative^2)"))
+  }
+  
+  # model
+  model <- speedglm(fitFormula, data = dt,family = binomial())
+
+  # avg_prediction calculates robust se for point in the prediction
+  ## estimate prevalence in total population
+  denominator <- avg_predictions(model, type = "response")
+  # counterfactual prediction for RRR_var = each level, same distribution as the empirical distribution of the total study population
+  ## estimate marginal prevalence in each level of RRR_var
+  numerator <- avg_predictions(model, variables = "NumberAffected", type = "response") %>% 
+    arrange(desc(NumberAffected))
+ 
+  # estimate the marginal lambda (counterfactual outcome)
+  lambda <- numerator$estimate/denominator$estimate
+  lambda_SE <- getRRR_SE(x = numerator$estimate, x_SE = numerator$std.error,
+                         y = denominator$estimate, y_SE = denominator$std.error)
+  lambda_L <- lambda - qnorm(0.975)*lambda_SE
+  lambda_H <- lambda + qnorm(0.975)*lambda_SE
+  
+  groupSize <- dt[, .N, by = "NumberAffected"] %>% 
+    arrange(desc(NumberAffected))
+  
+  eventSize <- dt %>% 
+    group_by(NumberAffected) %>% 
+    count(!!sym(Outcome_var)) %>% filter(!!sym(Outcome_var)==1)%>% 
+    arrange(desc(NumberAffected))
+
+  # arrange output
+  results <- tibble(
+    Year = dt$givenYear[1],
+    Outcome = Outcome,
+    Exposure = Exposure,
+    Relation = Relative,
+    n_Relation = numerator[,1],
+    Lambda = lambda,
+    Lambda_SE = lambda_SE,
+    Lambda_L = lambda_L,
+    Lambda_H = lambda_H,
+    PrevalenceR = numerator$estimate,
+    PrevalenceR_SE = numerator$std.error,
+    Prevalence = denominator$estimate,
+    Prevalence_SE = denominator$std.error,
+    EventSize = eventSize$n,
+    GroupSize = groupSize$N,
+    SampleSize = uniqueN(dt$RINPERSOON)
+    ) 
+  return(results)
+}
+```
+
+## Get RRR with functions
+
+### Labels
+
+```{r}
+exposures <- c("ADHD","ASD","T2D", "hypertension", "dyslipidemia", "stroke", "AP", "MI", "HF", "CM") 
+outcomes <- c("ADHD", "ASD","T2D", "hypertension", "dyslipidemia", "stroke", "AP", "MI", "HF", "CM") 
+relatives_fdr <- c("FDR") 
+relatives_parent <- c("Parent", "Father", "Mother") 
+relatives_sibling <- c("Sibling", "Brother", "Sister")  
+relatives_child <- c("Offspring", "Son", "Daughter") 
+relatives_auntUncle <- c("AuntUncle", "Uncle","Aunt")
+relatives_NN <- c("NieceNephew","Nephew","Niece")
+relatives_spouse <- c("Spouse", "Husband", "Wife")
+relatives_grandparent <- c("Grandparent","Grandfather","Grandmother")
+relatives_grandchild <- c("Grandchild")
+relatives_halfsibling <- c("Halfsibling", "Halfbrother", "Halfsister")
+relatives_sdr <- c("SDR") 
+```
+
+### Get Results
+
+```{r}
+parameters_dt_relative_newGeneration <- tibble(
+   outcomes_vector = c(outcomes, outcomes[2:10], outcomes[3:10]),
+   exposures_vector = c(exposures, rep("ADHD", 9), rep("ASD", 8))
+ )
+ 
+parameters_dt_relative_oldGeneration <- tibble(
+  exposures_vector = c(exposures, exposures[2:10], exposures[3:10]),
+  outcomes_vector = c(outcomes, rep("ADHD", 9), rep("ASD", 8))
+)
+#set cores for parallel
+registerDoParallel(cores = 2)
+
+#
+df <- fread("processData/phenotype_Parent_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+RRR_parent <- foreach(i = 1:length(relatives_parent), .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_parent[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_parent, "processData/V2_RRR_results_parent_2020.rds")  
+
+rm(df)
+gc()
+
+
+
+#
+df <- fread("processData/phenotype_FDR_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+RRR_FDR <- foreach(i = 1:length(relatives_fdr), .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_fdr[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+
+saveRDS(RRR_FDR, "processData/V2_RRR_results_FDR_2020.rds")
+
+
+rm(df)
+gc()
+
+
+
+#
+df <- fread("processData/phenotype_Sibling_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+RRR_sibling <- foreach(i = 1:length(relatives_sibling), .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_sibling[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_sibling, "processData/V2_RRR_results_sibling_2020.rds")
+
+
+rm(df)
+gc()
+
+
+#
+df <- fread("processData/phenotype_Spouse_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+RRR_spouse <- foreach(i = 1:length(relatives_spouse), .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_spouse[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_spouse, "processData/V2_RRR_results_spouse_2020.rds")
+
+rm(df)
+gc()
+
+
+#
+df <- fread("processData/phenotype_Offspring_2020.csv")
+parameters_dt <- parameters_dt_relative_newGeneration
+
+RRR_child <- foreach(i = 1:length(relatives_child), .combine = "rbind", 
+                   .packages = c("purrr", "data.table","speedglm", 
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_child[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_child, "processData/V2_RRR_results_offspring_2020.rds")
+rm(df)
+gc()
+
+#
+df <- fread("processData/phenotype_AuntUncle_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+RRR_auntUncle <- foreach(i = 1:length(relatives_auntUncle), .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_auntUncle[i]
+                     
+                     RRR_FDR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_auntUncle, "processData/V2_RRR_results_auntUncle_2020.rds")
+
+
+rm(df)
+gc()
+
+#
+df <- fread("processData/phenotype_NieceNephew_2020.csv")
+parameters_dt <- parameters_dt_relative_newGeneration
+
+RRR_NN <- foreach(i = 1:length(relatives_NN), .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_NN[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_NN, "processData/V2_RRR_results_NN_2020.rds")
+rm(df)
+gc()
+
+#
+df <- fread("processData/phenotype_Grandparent_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+RRR_grandparent <- foreach(i = 1:length(relatives_grandparent), 
+                           .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_grandparent[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_grandparent, "processData/V2_RRR_results_grandparent_2020.rds")
+rm(df)
+gc()
+
+#
+df <- fread("processData/phenotype_Grandchild_2020.csv")
+parameters_dt <- parameters_dt_relative_newGeneration
+
+RRR_grandchild <- foreach(i = 1:length(relatives_grandchild), 
+                           .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_grandchild[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+saveRDS(RRR_grandchild, "processData/V2_RRR_results_grandchild_2020.rds")
+rm(df)
+gc()
+
+#
+df <- fread("processData/phenotype_Halfsibling_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+
+RRR_halfsibling <- foreach(i = 1:length(relatives_halfsibling), 
+                           .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_halfsibling[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))}
+saveRDS(RRR_halfsibling, "processData/V2_RRR_results_halfsibling_2020.rds")
+rm(df)
+gc()
+
+
+
+#
+df <- fread("processData/phenotype_SDR_2020.csv")
+parameters_dt <- parameters_dt_relative_oldGeneration
+
+RRR_sdr <- foreach(i = 1:length(relatives_sdr), .combine = "rbind", 
+                   .packages = c("purrr", "data.table", "speedglm",
+                                 "marginaleffects", "tidyverse"),
+                   .export = c("getRRR", "getRRR_SE"))%dopar%{
+                     
+                     relative <- relatives_sdr[i]
+                     
+                     RRR <- map2_dfr(parameters_dt$outcomes_vector,
+                                         parameters_dt$exposures_vector,
+                                         ~getRRR(.x, .y, Relative = relative, 
+                                                 dt = df))
+                   }
+
+saveRDS(RRR_sdr, "processData/V2_RRR_results_SDR_2020.rds")
+
+
+rm(df)
+gc()
+```
