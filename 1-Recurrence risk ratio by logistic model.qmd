@@ -10,16 +10,6 @@ editor_options:
   chunk_output_type: console
 ---
 
-## Objectives
-
-1.  prepare the data for linear model: age\**Exposure + age\^2 \* Exposure + sex\**Exposure (options: + kinshipSize) kinship size is a categorical variable
-
-2.  linear model function, calculate the RRR and SE, 95% CI, RRR is relative risk ratio to control group.
-
-3.  prepare data for h2 calculation
-
-4.  present results in tables and figures
-
 ## Load packages
 
 ```{r}
@@ -40,15 +30,7 @@ library(doParallel)
 2.  marginal prevalence risk ratio (1 vs 0)
 
 ```{r}
-# 1. se of x/y
-getRRR_SE <- function(x, x_SE, y, y_SE){
-  varRR <- (1/y^2) * (x_SE^2) + (x^2/y^4) * (y_SE^2)
-  seRR <- sqrt(varRR)
-  return(seRR)
-}
-
-
-# 2. calculate RRR
+# calculate RRR
 getRRR <- function( Outcome, Exposure, Relative, dt)
   {
   RRR_var <- paste0(Exposure, "_", Relative)
@@ -56,9 +38,7 @@ getRRR <- function( Outcome, Exposure, Relative, dt)
   count_var <- paste0("counts_", Relative)
   birth_year_var <-  paste0("birth_year_", Relative)
   
-  # NA is only for sex-pecific kinship (brother), not for kinship (sibling) in our analysis data
   dt <- dt[!is.na(get(RRR_var)), ]
-  # calcualte individual age
   dt[, age := givenYear - birth_year]
   # calculate relative age
   dt[, age_relative := givenYear - get(birth_year_var)]
@@ -67,7 +47,6 @@ getRRR <- function( Outcome, Exposure, Relative, dt)
   # categorize
   if(Relative == "Parent"){
     dt[, NumberAffected := get(RRR_var)]
-    dt[NumberAffected>2, NumberAffected := 2]
     dt[, NumberAffected := as.character(NumberAffected)]
     dt[, NumberAffected:=factor(NumberAffected,
                                 levels = c("0", "1", "2"))]
@@ -79,12 +58,7 @@ getRRR <- function( Outcome, Exposure, Relative, dt)
                                 levels = c("0", "1"))]
   }
   
-  # avoid extreme number in kinship size
   dt[get(count_var)>2, (count_var) := 3]
-  if_n_kinship <- dt[,.N, by = count_var][get(count_var) == max(get(count_var)), N]
-  if(if_n_kinship <100){
-    dt[get(count_var) == max(get(count_var)), (count_var):= get(count_var) -1]
-  }
   # categorize the kinship size
   if(max(dt[,get(count_var)]) >2){
     dt[, kinshipSize := cut(get(count_var),
@@ -108,10 +82,10 @@ getRRR <- function( Outcome, Exposure, Relative, dt)
 
   # avg_prediction calculates robust se for point in the prediction
   ## estimate prevalence in total population
-  denominator <- avg_predictions(model, type = "response")
+  denominator <- avg_predictions(model, type = "response", vcov = TRUE)
   # counterfactual prediction for RRR_var = each level, same distribution as the empirical distribution of the total study population
   ## estimate marginal prevalence in each level of RRR_var
-  numerator <- avg_predictions(model, variables = "NumberAffected", type = "response") %>% 
+  numerator <- avg_predictions(model, variables = "NumberAffected", type = "response", vcov = TRUE) %>% 
     arrange(desc(NumberAffected))
  
   # estimate the marginal lambda (counterfactual outcome)
