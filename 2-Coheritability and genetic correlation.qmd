@@ -1,5 +1,5 @@
 ---
-title: "Step4-co heritability and genetic correlation"
+title: "Step2-co heritability and genetic correlation"
 format: html
 author: "Yiling Zhou & Yiran Li" 
 date: 29-03-2024 
@@ -358,4 +358,5 @@ dt_h2 <- dt_h2 %>% as_tibble() %>%
    dplyr::select(-h2_v)
 writexl::write_xlsx(dt_h2, "results/result_h2.xlsx")
 ```
+
 
