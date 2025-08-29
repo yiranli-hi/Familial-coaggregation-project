@@ -1,0 +1,518 @@
+---
+title: "Step4-co heritability and genetic correlation"
+format: html
+author: "Yiling Zhou & Yiran Li" 
+date: 29-03-2024 
+update: 27-04-2024
+R version: "4.2.3" 
+editor: visual 
+editor_options:
+  chunk_output_type: console
+---
+
+## References
+
+Functions to calculate h2 and genetic correlation step-by-step
+
+See Wray & Gottesman (2012) for explanation of method: doi: 10.3389/fgene.2012.00118
+
+Please cite Wray & Gottesman (2012) when using this code
+
+## Functions
+
+### Estimate prevalence in general population (with CIs and SE)
+
+K = prevalence = events/N
+
+N = number of total population
+
+```{r}
+getKx<-function(K, N){ 
+  Kx <- c(rep(0,4))
+  Kx[1] <- K
+  seKx = sqrt(K*(1-K)/N) # standard error
+  Kx[4] <- seKx
+  Kx[2] <- Kx[1]-qnorm(0.975)*seKx # lower limit 95% CI
+  Kx[3] <- Kx[1]+qnorm(0.975)*seKx # upper limit 95% CI
+  return(Kx)
+}
+```
+
+### Estimate prevalence in relative affected population (with CIs and SE)
+
+```{r}
+getKr<-function(lambda, K){
+  Kr<-c(rep(0,4))
+  seK=K[4]
+  seL<-lambda[2]
+  Kr[1]<-lambda[1]*K[1] # prevalence estimate
+  seKr<-Kr[1]*sqrt(seK*seK/(K[1]^2) + seL*seL/(lambda[1]^2))
+  Kr[4]<-seKr # standard error 
+  Kr[2]<-Kr[1]-qnorm(0.975)*seKr 
+  Kr[3]<-Kr[1]+qnorm(0.975)*seKr
+  return(Kr)
+}
+```
+
+### Estimate heritability (with CIs and SE)
+
+```{r}
+calculate_h2se <- function(Kx, Kr, a){
+
+  Tx = -qnorm(Kx[1], 0,1) # Liability threshold general population
+  Tr = -qnorm(Kr[1], 0,1) # Liability threshold in relative population
+  
+  yx = dnorm(Tx) # Height of normal curve at threshold T 
+  i = yx/Kx[1] # Mean liability of the affected group in general population 
+  yr = dnorm(Tr) # Height of normal curve at threshold Tr
+  
+  # heritability equation
+  if(a <1){
+    numerator <- Tx - Tr * sqrt(1 - (1 - Tx/i) * (Tx^2 - Tr^2))
+    denominator <- a * (i + (i-Tx) *Tr^2)
+  }else{
+    numerator <- 2*Tx - sqrt(2)*Tr*sqrt(2-(Tx^2-Tr^2)*(1-Tx/i))
+    denominator <- 2*i + (i-Tx)*Tr^2
+  }
+
+  h2 <- numerator / denominator #h2 estimate 
+    
+  # Standard error equation Appendix B Falconer 1965 Method 1
+  # Falconer a is i here, Falconer x is Tx here, Falconer p = (1-K)
+  se_Kx <- Kx[4]  
+  se_Kr <- Kr[4]
+  
+  VT <- se_Kx*se_Kx/(yx*yx)   #  Falconer Wg
+  VT1 <- se_Kr*se_Kr/(yr*yr)  #  Facloner Wr
+  Vb <- (1/i + h2*a*(i-Tx))^2*VT + VT1/(i^2) 
+  
+  se <- sqrt(Vb)/a
+  
+  # 95% CI
+  h2L= h2 - se * qnorm(0.975)
+  h2H= h2 + se * qnorm(0.975)
+  
+  h2_complete <- c(h2, h2L, h2H, se)
+  return(h2_complete)
+}
+```
+
+### Estimate co-heritability
+
+```{r}
+getrh1h2<-function(Kx,Ky,Kxy,a){
+  rh1h2<-c(0,0,0,0)
+
+  To <- -qnorm(Kx[1],0,1)
+  Tp <- -qnorm(Ky[1],0,1)
+  Top <- -qnorm(Kxy[1],0,1)
+  #height of the normal distribution at T
+  zo <- dnorm(To)
+  zp <- dnorm(Tp)
+  zop <- dnorm(Top) 
+  # mean liability of affected group, often (eg Falconer and Mackay) called the selection intensity       
+  io <- zo/Kx[1] 
+  ip <- zp/Ky[1] 
+  iop <- zop/Kxy[1] 
+  
+  # heritability on liability scale of risk 
+  if(a<1){
+    b <- (To-Top*sqrt(1-(1-Tp/ip)*(To*To-Top*Top)))/(ip+(ip-Tp)*Top*Top)
+  }else{
+    b <- (2*To-sqrt(2)*Top*sqrt(2-(To^2-Top^2)*(1-Tp/ip))) / (2*ip+(ip-Tp)*(Top^2))
+  }
+  
+        
+  VTo <- Kx[4]*Kx[4]/(zo*zo)
+  VTp <- Ky[4]*Ky[4]/(zp*zp)
+  VTop <- Kxy[4]*Kxy[4]/(zop*zop)
+  
+  Vb <- VTp*((1/ip + b*(ip - Tp))^2) + (VTop + VTo)/(ip^2)
+  
+  rh1h2[1] <- b/a
+  rh1h2[2] <- (b-sqrt(Vb)*qnorm(0.975))/a
+  rh1h2[3] <- (b+sqrt(Vb)*qnorm(0.975))/a
+  rh1h2[4] <- sqrt(Vb)/a
+  
+  return(rh1h2)
+}
+```
+
+### Estimate weighted mean (inverse variance weighting)
+
+V is Matrix with one row for each estimate and 4 columns: estimate, L95CI, U95% CI, SE
+
+```{r}
+get_wtmean<-function(V){
+  bar<-c(rep(0,4))
+  bar[1]<-sum(V[,1]/(V[,4]*V[,4]), na.rm=T)/sum(1/(V[,4]*V[,4]), na.rm=T)
+  bar[4]<-1/sqrt(sum(1/(V[,4]*V[,4]), na.rm=T))
+  bar[2]<-bar[1]-qnorm(0.975)*bar[4]
+  bar[3]<-bar[1]+qnorm(0.975)*bar[4]
+  return(bar)
+}
+```
+
+### Estimate genetic correlation (with 95%CI and SE)
+
+```{r}
+get_rg<-function(rgh1h2,h2_1,h2_2){
+  rg <- c(rep(0,4))
+  rg[1] <- rgh1h2[1]/sqrt(h2_1[1]*h2_2[1])
+  
+  h2_1_h2_2 <- h2_1[1]*h2_2[1]
+  seh2_1_h2_2 <- h2_1_h2_2*sqrt(h2_1[4]^2/h2_1[1]^2 + h2_2[4]^2/h2_2[1]^2)
+  seh_1_h_2 <- sqrt(h2_1_h2_2)*sqrt(0.25*seh2_1_h2_2*seh2_1_h2_2/h2_1_h2_2^2)
+  rg[4]<-abs(rg[1])*sqrt(rgh1h2[4]^2/rgh1h2[1]^2 + seh_1_h_2^2/h2_1_h2_2)
+  rg[2]<-rg[1]-qnorm(0.975)*rg[4]
+  rg[3]<-rg[1]+qnorm(0.975)*rg[4]
+  return(rg)
+}
+```
+
+## Load packages
+
+```{r}
+library(tidyverse) 
+library(data.table) 
+setDTthreads(getDTthreads())
+```
+
+## Import data
+
+```{r}
+df <- list.files("H:/FamilialProject/processData",pattern = "V2_RRR_results_*", 
+                 full.names = TRUE, recursive = FALSE) %>% 
+  map_dfr(., function(x){
+    dt <- readRDS(x)
+  }) %>% 
+  filter(!Relation %in% c("Spouse", "Husband", "Wife")) %>% 
+  mutate(Lambda = case_when(
+    Lambda <= 0 ~ 0.00001,
+    TRUE ~ Lambda
+  )) %>% 
+  mutate(Lambda_L = case_when(
+    Lambda_L <= 0 ~ 0.00001,
+    TRUE ~ Lambda_L
+  ))
+
+
+## all individual aged <=80
+df_phenotype <- readRDS("processData/df_phenotype_2020.rds") %>% 
+  filter(birth_year >= 1940)
+
+```
+
+## Prepare data
+
+```{r}
+df_1 <- df %>% 
+  filter(Relation == "Parent") %>% 
+  filter(n_Relation != 0) %>% 
+  mutate(Relation = case_when(
+    n_Relation==2 ~ "BothParent",
+    TRUE ~ Relation
+  )) %>% 
+  dplyr::select(-n_Relation, -Year)
+ 
+df_2 <- df %>% 
+  filter(Relation != "Parent") %>% 
+  filter(n_Relation == 1)%>% 
+  dplyr::select(-n_Relation, -Year)
+
+
+df_final <- rbind(df_1, df_2)
+```
+
+## Set a values
+
+```{r}
+list_a <- list(
+  "FDR" = 0.5,
+  "SDR" = 0.25,
+  
+  "BothParent" = 1,
+  "Parent" = 0.5, 
+  "Father" = 0.5, 
+  "Mother" = 0.5,
+  
+  "Sibling" = 0.5, 
+  "Brother" = 0.5, 
+  "Sister" = 0.5,
+  
+  "Offspring" = 0.5, 
+  "Son" = 0.5, 
+  "Daughter" = 0.5,
+  
+  "AuntUncle" = 0.25, 
+  "Uncle" = 0.25,
+  "Aunt" = 0.25,
+  
+  "NieceNephew" = 0.25,
+  "Nephew" = 0.25,
+  "Niece" = 0.25,
+  
+  "Grandparent" = 0.25,
+  "Grandfather" = 0.25,
+  "Grandmother" = 0.25,
+  
+  "Grandchild" = 0.25, 
+  "Grandson" = 0.25, 
+  "Granddaughter" = 0.25,
+  
+  "Halfsibling" = 0.25, 
+  "Halfbrother" = 0.25, 
+  "Halfsister" = 0.25
+)
+```
+
+## Get K, N from our phenotype data in all study population
+
+```{r}
+N_all <- uniqueN(df_phenotype$RINPERSOON)
+
+m_K <- df_phenotype %>% 
+  dplyr::select(-starts_with("year_"),-CA) %>% 
+  summarise(across(T2D:ASD, ~sum(.x, na.rm = TRUE)/N_all))
+```
+
+## Get Kx, Kr, and their SE
+
+```{r}
+list_Kx <- map(m_K[1,], ~getKx(.x, N = N_all))
+list_Kr <- df_final %>%
+  nest_by(Relation, Outcome, Exposure) %>% 
+  mutate(Kr_v = list(
+    getKr(lambda = as.matrix(data)[1, 1:4], K = list_Kx[[Outcome]])
+  )) %>% 
+  dplyr::select(Relation, Outcome, Exposure, Kr_v)
+```
+
+## Get heritabilty, co-heritability, and genetic correlation
+
+```{r}
+list_h2 <- list_Kr %>% 
+  filter(Outcome == Exposure) %>% 
+  mutate(h2_v = list(
+    calculate_h2se(Kx = list_Kx[[Outcome]], Kr = Kr_v, a = list_a[[Relation]])
+  )) %>% 
+  ungroup() %>% 
+  dplyr::select(-Exposure)
+saveRDS(list_h2, "processData/list_allResults_h2.rds")
+
+
+list_rh1h2 <- list_Kr %>% 
+  filter(Outcome!=Exposure) %>% 
+  mutate(rgh1h2_v = list(
+    getrh1h2(Kx = list_Kx[[Outcome]], Ky = list_Kx[[Exposure]], 
+             Kxy = Kr_v,
+             a = list_a[[Relation]])
+  )) %>% 
+  rename(Krxy_v = Kr_v) %>% 
+  ungroup()
+
+
+
+list_results <- list_rh1h2 %>% 
+  left_join(x=., y = list_h2, by = c("Relation", "Outcome")) %>% 
+  rename(h2_x_v = h2_v,
+         Kr_x_v = Kr_v) %>% 
+  left_join(x=., y = list_h2, by = c("Relation" = "Relation", "Exposure" = "Outcome")) %>% 
+  rename(h2_y_v = h2_v,
+         Kr_y_v = Kr_v)
+
+list_rg <- list_results %>% 
+  rowwise()%>% 
+  mutate(rg_v = list(
+    get_rg(rgh1h2 = rgh1h2_v, h2_1 = h2_x_v, h2_2 = h2_y_v)
+  ))
+
+saveRDS(list_rg, "processData/list_allResults_rg_h2.rds")
+```
+
+### Expand the results from each type of relative and save
+
+```{r}
+################genetic correlation###################
+dt_rg <- list_rg %>% 
+  dplyr::select("Relation", "Outcome", "Exposure", "h2_x_v", "h2_y_v", "rg_v")
+setDT(dt_rg)
+dt_rg[, c("h2", "h2_L", "h2_H", "h2_SE") := transpose(h2_x_v), by =.I]
+dt_rg[, c("h2_ex", "h2_ex_L", "h2_ex_H", "h2_ex_SE") := transpose(h2_y_v), by =.I]
+dt_rg[, c("rg", "rg_L", "rg_H", "rg_SE") := transpose(rg_v), by =.I]
+
+dt_rg <- dt_rg %>% as_tibble()
+dt_rg %>% 
+  dplyr::select("Relation", "Outcome", "Exposure","h2", "h2_L", "h2_H", "h2_SE",
+                "h2_ex", "h2_ex_L", "h2_ex_H", 
+                "h2_ex_SE", "rg", "rg_L", "rg_H", "rg_SE") -> result_rg
+writexl::write_xlsx(result_rg, "results/result_rg.xlsx")
+
+
+###############heritability#########################
+dt_h2 <- list_h2 %>% 
+  dplyr::select("Relation", "Outcome", "h2_v")
+setDT(dt_h2)
+dt_h2[, c("h2", "h2_L", "h2_H", "h2_SE") := transpose(h2_v), by =.I]
+dt_h2 <- dt_h2 %>% as_tibble() %>% 
+   dplyr::select(-h2_v)
+writexl::write_xlsx(dt_h2, "results/result_h2.xlsx")
+```
+
+## Weigthed mean of heritability and genetic correlation
+
+only for first degree relative
+
+```{r}
+##############weighted h2################
+dt_h2_weighted <- dt_h2 %>% 
+  filter(Relation %in% c( "BothParent", "Parent",  "Father", "Mother",
+                          "Offspring","Son","Daughter", "Sibling", 
+                          "Sister", "Brother")) %>% 
+  dplyr::select(-Relation) %>% 
+  nest_by(Outcome) %>% 
+  mutate(h2_v_weighted = list(
+    get_wtmean(V = data)
+  )) %>% 
+  dplyr::select(Outcome, h2_v_weighted) 
+
+setDT(dt_h2_weighted)
+dt_h2_weighted[, c("h2", "h2_L", "h2_H", "h2_SE") := transpose(h2_v_weighted), by =.I]
+dt_h2_weighted[,h2_v_weighted:=NULL]
+dt_h2_weighted <- dt_h2_weighted %>% as_tibble() 
+writexl::write_xlsx(dt_h2_weighted, 
+                    "results/result_h2_weighted_allFDR.xlsx")
+
+
+##############weighted rg################
+dt_rg_weighted <- dt_rg %>% 
+  dplyr::select(Relation, Outcome, Exposure, rg, rg_L, rg_H, rg_SE) %>% 
+  filter(Relation %in% c( "BothParent", "Parent",  "Father", "Mother",
+                          "Offspring","Son","Daughter","Sibling", 
+                          "Sister", "Brother")) %>% 
+  dplyr::select(-Relation)
+
+setDT(dt_rg_weighted)
+dt_rg_weighted[, PhenotypePair:= paste(pmin(Outcome, Exposure), pmax(Outcome, Exposure), sep = "-")]
+
+dt_rg_weighted <- dt_rg_weighted %>% as_tibble() %>% 
+  dplyr::select(-Outcome, -Exposure)
+  
+dt_rg_weighted <- dt_rg_weighted %>% 
+  nest_by(PhenotypePair) %>% 
+  mutate(rg_v_weighted = list(
+    get_wtmean(V = data)
+  )) %>% 
+  dplyr::select(PhenotypePair, rg_v_weighted) 
+
+setDT(dt_rg_weighted)
+dt_rg_weighted[, c("rg", "rg_L", "rg_H", "rg_SE") := transpose(rg_v_weighted), by =.I]
+dt_rg_weighted[,rg_v_weighted:=NULL]
+dt_rg_weighted <- dt_rg_weighted %>% as_tibble() 
+writexl::write_xlsx(dt_rg_weighted, 
+                    "results/result_rg_weighted_allFDR.xlsx")
+```
+
+only for second degree relative
+
+```{r}
+##############weighted h2################
+dt_h2_weighted <- dt_h2 %>% 
+  filter(Relation %in% c("AuntUncle", "Uncle","Aunt",
+                          "NieceNephew","Nephew","Niece",
+                          "Grandparent", "Grandfather","Grandmother",
+                          "Grandchild",  "Grandson", "Granddaughter",
+                          "Halfsibling",  "Halfbrother", "Halfsister")) %>% 
+  dplyr::select(-Relation) %>% 
+  nest_by(Outcome) %>% 
+  mutate(h2_v_weighted = list(
+    get_wtmean(V = data)
+  )) %>% 
+  dplyr::select(Outcome, h2_v_weighted) 
+
+setDT(dt_h2_weighted)
+dt_h2_weighted[, c("h2", "h2_L", "h2_H", "h2_SE") := transpose(h2_v_weighted), by =.I]
+dt_h2_weighted[,h2_v_weighted:=NULL]
+dt_h2_weighted <- dt_h2_weighted %>% as_tibble() 
+writexl::write_xlsx(dt_h2_weighted, 
+                    "results/result_h2_weighted_allSDR.xlsx")
+
+
+##############weighted rg################
+dt_rg_weighted <- dt_rg %>% 
+  dplyr::select(Relation, Outcome, Exposure, rg, rg_L, rg_H, rg_SE) %>% 
+  filter(Relation %in% c("AuntUncle", "Uncle","Aunt",
+                          "NieceNephew","Nephew","Niece",
+                          "Grandparent", "Grandfather","Grandmother",
+                          "Grandchild",  "Grandson", "Granddaughter",
+                          "Halfsibling",  "Halfbrother", "Halfsister")) %>% 
+  dplyr::select(-Relation)
+
+setDT(dt_rg_weighted)
+dt_rg_weighted[, PhenotypePair:= paste(pmin(Outcome, Exposure), pmax(Outcome, Exposure), sep = "-")]
+
+dt_rg_weighted <- dt_rg_weighted %>% as_tibble() %>% 
+  dplyr::select(-Outcome, -Exposure)
+  
+dt_rg_weighted <- dt_rg_weighted %>% 
+  nest_by(PhenotypePair) %>% 
+  mutate(rg_v_weighted = list(
+    get_wtmean(V = data)
+  )) %>% 
+  dplyr::select(PhenotypePair, rg_v_weighted) 
+
+setDT(dt_rg_weighted)
+dt_rg_weighted[, c("rg", "rg_L", "rg_H", "rg_SE") := transpose(rg_v_weighted), by =.I]
+dt_rg_weighted[,rg_v_weighted:=NULL]
+dt_rg_weighted <- dt_rg_weighted %>% as_tibble() 
+writexl::write_xlsx(dt_rg_weighted, 
+                    "results/result_rg_weighted_allSDR.xlsx")
+
+```
+
+for both first degree relative and second degree relative
+
+```{r}
+##############weighted h2################
+dt_h2_weighted <- dt_h2 %>% 
+  dplyr::select(-Relation) %>% 
+  nest_by(Outcome) %>% 
+  mutate(h2_v_weighted = list(
+    get_wtmean(V = data)
+  )) %>% 
+  dplyr::select(Outcome, h2_v_weighted) 
+
+setDT(dt_h2_weighted)
+dt_h2_weighted[, c("h2", "h2_L", "h2_H", "h2_SE") := transpose(h2_v_weighted), by =.I]
+dt_h2_weighted[,h2_v_weighted:=NULL]
+dt_h2_weighted <- dt_h2_weighted %>% as_tibble() 
+writexl::write_xlsx(dt_h2_weighted, 
+                    "results/result_h2_weighted_all.xlsx")
+
+
+##############weighted rg################
+dt_rg_weighted <- dt_rg %>% 
+  dplyr::select(Relation, Outcome, Exposure, rg, rg_L, rg_H, rg_SE) %>% 
+  dplyr::select(-Relation)
+
+setDT(dt_rg_weighted)
+dt_rg_weighted[, PhenotypePair:= paste(pmin(Outcome, Exposure), pmax(Outcome, Exposure), sep = "-")]
+
+dt_rg_weighted <- dt_rg_weighted %>% as_tibble() %>% 
+  dplyr::select(-Outcome, -Exposure)
+  
+dt_rg_weighted <- dt_rg_weighted %>% 
+  nest_by(PhenotypePair) %>% 
+  mutate(rg_v_weighted = list(
+    get_wtmean(V = data)
+  )) %>% 
+  dplyr::select(PhenotypePair, rg_v_weighted) 
+
+setDT(dt_rg_weighted)
+dt_rg_weighted[, c("rg", "rg_L", "rg_H", "rg_SE") := transpose(rg_v_weighted), by =.I]
+dt_rg_weighted[,rg_v_weighted:=NULL]
+dt_rg_weighted <- dt_rg_weighted %>% as_tibble() 
+writexl::write_xlsx(dt_rg_weighted, 
+                    "results/result_rg_weighted_all.xlsx")
+
+```
