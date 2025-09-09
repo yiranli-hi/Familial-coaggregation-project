@@ -262,7 +262,11 @@ list_a <- list(
   
   "Halfsibling" = 0.25, 
   "Halfbrother" = 0.25, 
-  "Halfsister" = 0.25
+  "Halfsister" = 0.25,
+
+   "Cousin" = 0.125,
+   "CousinM" = 0.125,
+  "CousinF" = 0.125,
 )
 ```
 
@@ -358,5 +362,6 @@ dt_h2 <- dt_h2 %>% as_tibble() %>%
    dplyr::select(-h2_v)
 writexl::write_xlsx(dt_h2, "results/result_h2.xlsx")
 ```
+
 
 
