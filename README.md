@@ -1,2 +1,4 @@
 # Familial-coaggregation-project
-This GitHub is a repository for code related to the manuscript "  Familial co-aggregation and shared heritability between clinically diagnosed neurodevelopmental problems and cardiometabolic conditions: a nationwide register study across three generations"
+This GitHub repository contains the code used in the paper 
+Li Y et al. Familial co-aggregation and shared heritability between neurodevelopmental problems and cardiometabolic conditions. Nature Mental Health 2025.
+https://www.nature.com/articles/s44220-025-00535-y
